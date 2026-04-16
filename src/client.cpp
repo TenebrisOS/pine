@@ -10,6 +10,8 @@
 
 using enum PINE::PCSX2::IPCCommand;
 
+#define PINE_DEFAULT_SLOT 28011
+
 // a portable sleep function
 auto msleep(int sleepMs) -> void {
 #ifdef _WIN32
@@ -39,77 +41,159 @@ auto read_background(PINE::PCSX2 *ipc) -> void {
     }
 }
 
+static bool sendPINECommand(int slot, unsigned char command)  
+{  
+#ifdef _WIN32  
+    WSADATA wsa = {};  
+    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0)  
+        return false;  
+  
+    SOCKET sock = socket(AF_INET, SOCK_STREAM, 0);  
+    if (sock == INVALID_SOCKET)  
+    {  
+        WSACleanup();  
+        return false;  
+    }  
+  
+    sockaddr_in server = {};  
+    server.sin_family = AF_INET;  
+    server.sin_addr.s_addr = htonl(INADDR_LOOPBACK);  
+    server.sin_port = htons(slot);  
+  
+    if (connect(sock, (struct sockaddr*)&server, sizeof(server)) == SOCKET_ERROR)  
+    {  
+        printf("Failed to connect to PINE server on port %u\n", slot);  
+        closesocket(sock);  
+        WSACleanup();  
+        return false;  
+    }  
+    
+    printf("Connected to PINE server\n");
+  
+    // Build message: [4-byte size] [command byte]
+    u8 buffer[5];
+    u32 size = 1;  // Just the command byte
+    
+    // Little-endian size
+    buffer[0] = size & 0xFF;  
+    buffer[1] = (size >> 8) & 0xFF;  
+    buffer[2] = (size >> 16) & 0xFF;  
+    buffer[3] = (size >> 24) & 0xFF;  
+    buffer[4] = command;  
+    
+    printf("Sending command: 0x%02x with size=%u\n", command, size);  
+    printf("Raw bytes: %02x %02x %02x %02x %02x\n",   
+           buffer[0], buffer[1], buffer[2], buffer[3], buffer[4]);
+  
+    int bytes_sent = send(sock, (const char*)buffer, 5, 0);  
+    printf("Bytes sent: %d\n", bytes_sent);
+    
+    bool success = (bytes_sent == 5);
+    
+    // Try to read response
+    u8 response[512];
+    int bytes_recv = recv(sock, (char*)response, sizeof(response), 0);
+    if (bytes_recv > 0)
+    {
+        printf("Received response: %d bytes\n", bytes_recv);
+        if (bytes_recv >= 5)
+        {
+            printf("Response: %02x %02x %02x %02x %02x\n",   
+                   response[0], response[1], response[2], response[3], response[4]);
+        }
+    }
+    
+    closesocket(sock);  
+    WSACleanup();  
+#else  
+    int sock = socket(AF_UNIX, SOCK_STREAM, 0);  
+    if (sock < 0)  
+        return false;  
+  
+    std::string socket_name;  
+    char* runtime_dir = nullptr;  
+#ifdef __APPLE__  
+    runtime_dir = std::getenv("TMPDIR");  
+#else  
+    runtime_dir = std::getenv("XDG_RUNTIME_DIR");  
+#endif  
+    if (runtime_dir == nullptr)  
+        socket_name = "/tmp/pcsx2.sock";  
+    else  
+    {  
+        socket_name = runtime_dir;  
+        socket_name += "/pcsx2.sock";  
+    }  
+  
+    if (slot != PINE_DEFAULT_SLOT)  
+        socket_name += "." + std::to_string(slot);  
+  
+    struct sockaddr_un server;  
+    server.sun_family = AF_UNIX;  
+    strncpy(server.sun_path, socket_name.c_str(), sizeof(server.sun_path) - 1);  
+  
+    if (connect(sock, (struct sockaddr*)&server, sizeof(server)) < 0)  
+    {  
+        close(sock);  
+        return false;  
+    }  
+  
+    u8 buffer[5];
+    u32 size = 1;
+    buffer[0] = size & 0xFF;  
+    buffer[1] = (size >> 8) & 0xFF;  
+    buffer[2] = (size >> 16) & 0xFF;  
+    buffer[3] = (size >> 24) & 0xFF;  
+    buffer[4] = command;
+    
+    printf("Sending command: 0x%02x with size=%u\n", command, size);
+    
+    int bytes_sent = write(sock, buffer, 5);  
+    printf("Bytes sent: %d\n", bytes_sent);
+    
+    bool success = (bytes_sent == 5);
+    
+    u8 response[512];
+    int bytes_recv = read(sock, response, sizeof(response));
+    if (bytes_recv > 0)
+    {
+        printf("Received response: %d bytes\n", bytes_recv);
+        if (bytes_recv >= 5)
+        {
+            printf("Response: %02x %02x %02x %02x %02x\n",   
+                   response[0], response[1], response[2], response[3], response[4]);
+        }
+    }
+    
+    close(sock);  
+#endif  
+  
+    return success;  
+}
+
+
 // the main function that is executed at the start of our program
 auto main(int argc, char *argv[]) -> int {
 
-    // we instantiate a new PINE::PCSX2 object. It should be shared across all
-    // your threads.
-    PINE::PCSX2 *ipc = new PINE::PCSX2();
+    int slot = PINE_DEFAULT_SLOT;
+    unsigned char command = 0x67;   // example command byte
 
-    // we create a new thread
-    std::thread first(read_background, ipc);
+    printf("Sending PINE command...\n");
 
-    // in this case we wait 5 seconds before writing to our address
-    msleep(5000);
-    try {
-        // a normal write can be done this way
-        ipc->Write<u8>(0x00347D34, 0x5);
+    bool ok = sendPINECommand(slot, command);
 
-        // if you need to make a lot of IPC requests at once(eg >50/frame @
-        // 60fps) it is recommended to build a batch message: you should build
-        // this message at the start of your thread once and keep the
-        // BatchCommand to avoid wasting time recreating this
-        // IPC packet.
-        //
-        // to create a batch IPC packet you need to initialize it, be sure to
-        // enable the batch command in templates(read the documentation, for
-        // Read it is Read<T, true>) and finalize it.
-        ipc->InitializeBatch();
-        ipc->Write<u8, true>(0x00347D34, 0xFF);
-        ipc->Write<u8, true>(0x00347D33, 0xEF);
-        ipc->Write<u8, true>(0x00347D32, 0xDF);
-        auto res = ipc->FinalizeBatch();
-        // our batch ipc packet is now saved and ready to be used whenever! When
-        // we need it we just fire up a SendCommand:
-        ipc->SendCommand(res);
-
-        // let's do it another time, but this time with Read, which returns
-        // arguments!
-        ipc->InitializeBatch();
-        ipc->Read<u8, true>(0x00347D34);
-        ipc->Read<u8, true>(0x00347D33);
-        ipc->Version<true>();
-        ipc->Read<u8, true>(0x00347D32);
-        auto resr = ipc->FinalizeBatch();
-        // same as before
-        ipc->SendCommand(resr);
-
-        // now reading the return value is a little bit more tricky, you'll have
-        // to know the type of your function and the number it was executed in.
-        // For example, Read(0x00347D32) was our third function, and is a
-        // function of type MsgRead8, so we will do:
-        //   GetReply<MsgRead8>(resr, 2);
-        // 2 since arrays start at 0 in C++, so 3-1 = 2 and resr being our
-        // BatchCommand that we saved above!
-        // Refer to the documentation of IPCCommand to know all the possible
-        // function types
-        printf("PINE::PCSX2::Version() :  %s\n",
-               ipc->GetReply<MsgVersion>(resr, 2));
-        printf("PINE::PCSX2::Read<uint8_t>(0x00347D32) :  %u\n",
-               ipc->GetReply<MsgRead8>(resr, 3));
-    } catch (...) {
-        // if the operation failed
-        printf("ERROR!!!!!\n");
+    if (ok) {
+        printf("Command sent successfully\n");
+    } else {
+        printf("Failed to send command\n");
     }
 
-    // we wait for the thread to finish. in our case it is an infinite loop
-    // (while true) so it will never do so.
-    first.join();
-
-    // we do not forget to free our IPC object to avoid any memory leak,
-    // although they will technically get automatically freed by the OS at
-    // process shutdown
-    delete ipc;
+    /*
+    while (true) {
+        sendPINECommand(slot, command);
+        msleep(1000);
+    }
+    */
 
     return 0;
 }

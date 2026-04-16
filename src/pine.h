@@ -326,7 +326,15 @@ class Shared {
         MsgUUID = 0xD,          /**< Returns the game UUID. */
         MsgGameVersion = 0xE,   /**< Returns the game verion. */
         MsgStatus = 0xF,        /**< Returns the emulator status. */
-        MsgUnimplemented = 0xFF /**< Unimplemented IPC message. */
+        MsgUnimplemented = 0xFF, /**< Unimplemented IPC message. */
+        MsgReset = 0x10, /**< Resets the emulator. */
+        MsgLoadDisc = 0x11, /**< Load current physical disc. */
+        MsgUnloadDisc = 0x12, /**< Unload current physical disc. */
+        MsgShowFPS = 0x13, /**< Shows the number of internal video frames displayed per second by the system */
+        MsgEjectCard1 = 0x14, /**< Ejects the first memory card. */
+        MsgEjectCard2 = 0x15, /**< Ejects the second memory card. */
+        MsgShutdownVM = 0x67 /**< Shuts down the virtual machine. */
+
     };
 
     /**
